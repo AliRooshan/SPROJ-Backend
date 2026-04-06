@@ -88,9 +88,18 @@ CREATE TABLE IF NOT EXISTS applications (
   UNIQUE(user_id, program_id)
 );
 
+CREATE TABLE IF NOT EXISTS visa_guidance (
+  id          SERIAL PRIMARY KEY,
+  country     TEXT NOT NULL UNIQUE,
+  steps       JSONB NOT NULL DEFAULT '[]',   -- array of {id, title, description, duration}
+  documents   TEXT[] NOT NULL DEFAULT '{}',  -- list of required document names
+  created_at  TIMESTAMPTZ DEFAULT NOW()
+);
+
 CREATE INDEX idx_programs_country        ON programs(country);
 CREATE INDEX idx_programs_tuition        ON programs(tuition);
 CREATE INDEX idx_programs_duration       ON programs(duration);
 CREATE INDEX idx_applications_user       ON applications(user_id);
 CREATE INDEX idx_saved_programs_user     ON saved_programs(user_id);
 CREATE INDEX idx_saved_scholarships_user ON saved_scholarships(user_id);
+CREATE INDEX idx_visa_country            ON visa_guidance(country);

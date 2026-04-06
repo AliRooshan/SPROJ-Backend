@@ -8,6 +8,7 @@ const programRoutes = require('./routes/programs');
 const scholarshipRoutes = require('./routes/scholarships');
 const costRoutes = require('./routes/costs');
 const userRoutes = require('./routes/users');
+const visaRoutes = require('./routes/visa');
 
 const app = express();
 
@@ -27,6 +28,8 @@ app.get('/', (req, res) => {
       'GET  /api/programs',
       'GET  /api/scholarships',
       'GET  /api/costs',
+      'GET  /api/visa',
+      'GET  /api/visa/:country',
       'POST /api/auth/register',
       'POST /api/auth/login',
       'GET  /api/auth/me',
@@ -44,6 +47,7 @@ app.use('/api/programs', programRoutes);
 app.use('/api/scholarships', scholarshipRoutes);
 app.use('/api/costs', costRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/visa', visaRoutes);
 
 // ── 404 handler ────────────────────────────────────────────────────────────────
 app.use((req, res) => {
