@@ -150,4 +150,80 @@ router.get('/me', authenticateToken, async (req, res) => {
   }
 });
 
+// ── PUT /api/auth/me ──────────────────────────────────────────────────────────
+router.put('/me', authenticateToken, async (req, res) => {
+  const { full_name, phone } = req.body;
+  try {
+    const result = await pool.query(
+      `UPDATE users
+       SET full_name = COALESCE($1, full_name),
+           phone = COALESCE($2, phone)
+       WHERE id = $3
+       RETURNING id, email, full_name, phone, is_admin, created_at`,
+      [full_name ?? null, phone ?? null, req.user.id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({ message: 'Account updated', user: result.rows[0] });
+  } catch (err) {
+    console.error('PUT /auth/me error:', err.message);
+    res.status(500).json({ error: 'Failed to update account' });
+  }
+});
+
+// ── PUT /api/auth/change-password ──────────────────────────────────────────────
+router.put(
+  '/change-password',
+  authenticateToken,
+  [
+    body('current_password').notEmpty().withMessage('Current password is required'),
+    body('new_password').isLength({ min: 6 }).withMessage('New password must be at least 6 characters'),
+    body('confirm_password').notEmpty().withMessage('Confirm password is required')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { current_password, new_password, confirm_password } = req.body;
+    if (new_password !== confirm_password) {
+      return res.status(400).json({ error: 'New password and confirm password do not match' });
+    }
+
+    try {
+      const userResult = await pool.query(
+        'SELECT id, password_hash FROM users WHERE id = $1',
+        [req.user.id]
+      );
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      const user = userResult.rows[0];
+      const matches = await bcrypt.compare(current_password, user.password_hash);
+      if (!matches) {
+        return res.status(400).json({ error: 'Current password is incorrect' });
+      }
+
+      const sameAsCurrent = await bcrypt.compare(new_password, user.password_hash);
+      if (sameAsCurrent) {
+        return res.status(400).json({ error: 'New password must be different from current password' });
+      }
+
+      const newHash = await bcrypt.hash(new_password, 12);
+      await pool.query(
+        'UPDATE users SET password_hash = $1 WHERE id = $2',
+        [newHash, req.user.id]
+      );
+
+      res.json({ message: 'Password updated successfully' });
+    } catch (err) {
+      console.error('PUT /auth/change-password error:', err.message);
+      res.status(500).json({ error: 'Failed to update password' });
+    }
+  }
+);
+
 module.exports = router;

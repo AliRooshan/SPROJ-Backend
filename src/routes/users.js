@@ -1,6 +1,6 @@
 const express = require('express');
 const pool = require('../db');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, requireAdmin } = require('../middleware/auth');
 
 const router = express.Router();
 
@@ -20,6 +20,23 @@ const isSelf = (req, res, next) => {
   }
   next();
 };
+
+// ── GET /api/users/admin/stats ────────────────────────────────────────────────
+router.get('/admin/stats', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT
+         COUNT(*)::int AS total_users,
+         COUNT(*) FILTER (WHERE is_admin = true)::int AS admin_users,
+         COUNT(*) FILTER (WHERE is_admin = false)::int AS student_users
+       FROM users`
+    );
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('GET /users/admin/stats error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch user stats' });
+  }
+});
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PROFILE
