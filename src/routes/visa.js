@@ -8,7 +8,12 @@ const router = express.Router();
 // Public. Returns all countries' visa guidance.
 router.get('/', async (req, res) => {
   try {
-    const result = await pool.query('SELECT * FROM visa_guidance ORDER BY country ASC');
+    const result = await pool.query(`
+      SELECT vg.*, co.name AS country
+      FROM visa_guidance vg
+      JOIN countries co ON co.id = vg.country_id
+      ORDER BY co.name ASC
+    `);
     res.json(result.rows);
   } catch (err) {
     console.error('GET /visa error:', err.message);
@@ -21,7 +26,10 @@ router.get('/', async (req, res) => {
 router.get('/:country', async (req, res) => {
   try {
     const result = await pool.query(
-      'SELECT * FROM visa_guidance WHERE LOWER(country) = LOWER($1)',
+      `SELECT vg.*, co.name AS country
+       FROM visa_guidance vg
+       JOIN countries co ON co.id = vg.country_id
+       WHERE LOWER(co.name) = LOWER($1)`,
       [req.params.country]
     );
     if (result.rows.length === 0) {
@@ -42,11 +50,19 @@ router.post('/', authenticateToken, requireAdmin, async (req, res) => {
   if (!country) return res.status(400).json({ error: 'country is required' });
 
   try {
+    const countryResult = await pool.query(
+      `SELECT id FROM countries WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+      [country]
+    );
+    if (countryResult.rows.length === 0) {
+      return res.status(400).json({ error: 'Unknown country' });
+    }
+
     const result = await pool.query(
-      `INSERT INTO visa_guidance (country, steps, documents)
+      `INSERT INTO visa_guidance (country_id, steps, documents)
        VALUES ($1, $2, $3)
        RETURNING *`,
-      [country, JSON.stringify(steps || []), documents || []]
+      [countryResult.rows[0].id, JSON.stringify(steps || []), JSON.stringify(documents || [])]
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -64,12 +80,20 @@ router.put('/:country', authenticateToken, requireAdmin, async (req, res) => {
   const { steps, documents } = req.body;
 
   try {
+    const countryResult = await pool.query(
+      `SELECT id FROM countries WHERE LOWER(name) = LOWER($1) LIMIT 1`,
+      [req.params.country]
+    );
+    if (countryResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Visa guidance not found for this country' });
+    }
+
     const result = await pool.query(
       `UPDATE visa_guidance
        SET steps=$1, documents=$2
-       WHERE LOWER(country) = LOWER($3)
+       WHERE country_id = $3
        RETURNING *`,
-      [JSON.stringify(steps || []), documents || [], req.params.country]
+      [JSON.stringify(steps || []), JSON.stringify(documents || []), countryResult.rows[0].id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Visa guidance not found for this country' });
@@ -85,9 +109,17 @@ router.put('/:country', authenticateToken, requireAdmin, async (req, res) => {
 // Admin only.
 router.delete('/:country', authenticateToken, requireAdmin, async (req, res) => {
   try {
-    const result = await pool.query(
-      'DELETE FROM visa_guidance WHERE LOWER(country) = LOWER($1) RETURNING id',
+    const countryResult = await pool.query(
+      `SELECT id FROM countries WHERE LOWER(name) = LOWER($1) LIMIT 1`,
       [req.params.country]
+    );
+    if (countryResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Visa guidance not found for this country' });
+    }
+
+    const result = await pool.query(
+      'DELETE FROM visa_guidance WHERE country_id = $1 RETURNING id',
+      [countryResult.rows[0].id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Visa guidance not found for this country' });

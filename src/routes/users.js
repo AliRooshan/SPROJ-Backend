@@ -16,21 +16,86 @@ const isSelf = (req, res, next) => {
 // PROFILE
 // ══════════════════════════════════════════════════════════════════════════════
 
-// ── PUT /api/users/:id/profile ────────────────────────────────────────────────
-router.put('/:id/profile', authenticateToken, isSelf, async (req, res) => {
-  const { full_name, phone, degree, major, gpa, english_test, english_score, target_countries, intake, budget, career_goal } = req.body;
-
+// ── GET /api/users/:id/profile ────────────────────────────────────────────────
+router.get('/:id/profile', authenticateToken, isSelf, async (req, res) => {
   try {
     const result = await pool.query(
+      `SELECT u.id, u.email, u.full_name, u.phone, u.is_admin, u.created_at,
+              up.degree_level, up.major, up.gpa, up.english_test, up.english_score,
+              up.target_countries, up.intake_term, up.budget_min, up.budget_max,
+              up.budget_currency, up.career_goal
+       FROM users u
+       LEFT JOIN user_profiles up ON up.user_id = u.id
+       WHERE u.id = $1`,
+      [req.params.id]
+    );
+
+    if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
+    res.json(result.rows[0]);
+  } catch (err) {
+    console.error('GET /users/:id/profile error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch profile' });
+  }
+});
+
+// ── PUT /api/users/:id/profile ────────────────────────────────────────────────
+router.put('/:id/profile', authenticateToken, isSelf, async (req, res) => {
+  const {
+    full_name, phone, degree_level, major, gpa, english_test, english_score,
+    target_countries, intake_term, budget_min, budget_max, budget_currency, career_goal
+  } = req.body;
+
+  try {
+    await pool.query(
       `UPDATE users
-       SET full_name=$1, phone=$2, degree=$3, major=$4, gpa=$5,
-           english_test=$6, english_score=$7, target_countries=$8,
-           intake=$9, budget=$10, career_goal=$11
-       WHERE id=$12
-       RETURNING id, email, full_name, phone, degree, major, gpa,
-                 english_test, english_score, target_countries, intake,
-                 budget, career_goal, is_admin, created_at`,
-      [full_name, phone, degree, major, gpa, english_test, english_score, target_countries, intake, budget, career_goal, req.params.id]
+       SET full_name = COALESCE($1, full_name), phone = COALESCE($2, phone)
+       WHERE id = $3`,
+      [full_name ?? null, phone ?? null, req.params.id]
+    );
+
+    await pool.query(
+      `INSERT INTO user_profiles (
+         user_id, degree_level, major, gpa, english_test, english_score,
+         intake_term, budget_min, budget_max, budget_currency, career_goal, target_countries
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+       ON CONFLICT (user_id) DO UPDATE SET
+         degree_level = EXCLUDED.degree_level,
+         major = EXCLUDED.major,
+         gpa = EXCLUDED.gpa,
+         english_test = EXCLUDED.english_test,
+         english_score = EXCLUDED.english_score,
+         intake_term = EXCLUDED.intake_term,
+         budget_min = EXCLUDED.budget_min,
+         budget_max = EXCLUDED.budget_max,
+         budget_currency = EXCLUDED.budget_currency,
+         career_goal = EXCLUDED.career_goal,
+         target_countries = EXCLUDED.target_countries`,
+      [
+        req.params.id,
+        degree_level ?? null,
+        major ?? null,
+        gpa ?? null,
+        english_test ?? null,
+        english_score ?? null,
+        intake_term ?? null,
+        budget_min ?? null,
+        budget_max ?? null,
+        budget_currency || 'USD',
+        career_goal ?? null,
+        JSON.stringify(target_countries || [])
+      ]
+    );
+
+    const result = await pool.query(
+      `SELECT u.id, u.email, u.full_name, u.phone, u.is_admin, u.created_at,
+              up.degree_level, up.major, up.gpa, up.english_test, up.english_score,
+              up.target_countries, up.intake_term, up.budget_min, up.budget_max,
+              up.budget_currency, up.career_goal
+       FROM users u
+       LEFT JOIN user_profiles up ON up.user_id = u.id
+       WHERE u.id = $1`,
+      [req.params.id]
     );
 
     if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
@@ -83,7 +148,7 @@ router.post('/:id/saved-programs/:programId', authenticateToken, isSelf, async (
 router.delete('/:id/saved-programs/:programId', authenticateToken, isSelf, async (req, res) => {
   try {
     const result = await pool.query(
-      `DELETE FROM saved_programs WHERE user_id=$1 AND program_id=$2 RETURNING id`,
+      `DELETE FROM saved_programs WHERE user_id=$1 AND program_id=$2 RETURNING program_id`,
       [req.params.id, req.params.programId]
     );
     if (result.rows.length === 0) {
@@ -138,7 +203,7 @@ router.post('/:id/saved-scholarships/:scholarshipId', authenticateToken, isSelf,
 router.delete('/:id/saved-scholarships/:scholarshipId', authenticateToken, isSelf, async (req, res) => {
   try {
     const result = await pool.query(
-      `DELETE FROM saved_scholarships WHERE user_id=$1 AND scholarship_id=$2 RETURNING id`,
+      `DELETE FROM saved_scholarships WHERE user_id=$1 AND scholarship_id=$2 RETURNING scholarship_id`,
       [req.params.id, req.params.scholarshipId]
     );
     if (result.rows.length === 0) {
@@ -159,7 +224,11 @@ router.delete('/:id/saved-scholarships/:scholarshipId', authenticateToken, isSel
 router.get('/:id/applications', authenticateToken, isSelf, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT * FROM applications WHERE user_id = $1 ORDER BY created_at DESC`,
+      `SELECT a.*, p.name AS program_name, p.deadline
+       FROM applications a
+       JOIN programs p ON p.id = a.program_id
+       WHERE a.user_id = $1
+       ORDER BY a.applied_at DESC`,
       [req.params.id]
     );
     res.json(result.rows);
@@ -171,14 +240,15 @@ router.get('/:id/applications', authenticateToken, isSelf, async (req, res) => {
 
 // ── POST /api/users/:id/applications ─────────────────────────────────────────
 router.post('/:id/applications', authenticateToken, isSelf, async (req, res) => {
-  const { program_id, university, program_name, country, deadline, status } = req.body;
+  const { program_id, status } = req.body;
+  if (!program_id) return res.status(400).json({ error: 'program_id is required' });
 
   try {
     const result = await pool.query(
-      `INSERT INTO applications (user_id, program_id, university, program_name, country, deadline, status)
-       VALUES ($1,$2,$3,$4,$5,$6,$7)
+      `INSERT INTO applications (user_id, program_id, status)
+       VALUES ($1,$2,$3)
        RETURNING *`,
-      [req.params.id, program_id || null, university, program_name, country, deadline, status || 'pending']
+      [req.params.id, program_id, status || 'pending']
     );
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -189,15 +259,15 @@ router.post('/:id/applications', authenticateToken, isSelf, async (req, res) => 
 
 // ── PUT /api/users/:id/applications/:appId ───────────────────────────────────
 router.put('/:id/applications/:appId', authenticateToken, isSelf, async (req, res) => {
-  const { status, university, program_name, country, deadline } = req.body;
+  const { status } = req.body;
 
   try {
     const result = await pool.query(
       `UPDATE applications
-       SET status=$1, university=$2, program_name=$3, country=$4, deadline=$5
-       WHERE id=$6 AND user_id=$7
+       SET status=$1
+       WHERE id=$2 AND user_id=$3
        RETURNING *`,
-      [status, university, program_name, country, deadline, req.params.appId, req.params.id]
+      [status, req.params.appId, req.params.id]
     );
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Application not found' });

@@ -87,10 +87,13 @@ router.post(
 
     try {
       const result = await pool.query(
-        `SELECT id, email, password_hash, full_name, phone, degree, major, gpa,
-                english_test, english_score, target_countries, intake, budget,
-                career_goal, is_admin, created_at
-         FROM users WHERE email = $1`,
+        `SELECT u.id, u.email, u.password_hash, u.full_name, u.phone, u.is_admin, u.created_at,
+                up.degree_level, up.major, up.gpa, up.english_test, up.english_score,
+                up.target_countries, up.intake_term, up.budget_min, up.budget_max,
+                up.budget_currency, up.career_goal
+         FROM users u
+         LEFT JOIN user_profiles up ON up.user_id = u.id
+         WHERE u.email = $1`,
         [email]
       );
 
@@ -126,10 +129,13 @@ router.post(
 router.get('/me', authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT id, email, full_name, phone, degree, major, gpa,
-              english_test, english_score, target_countries, intake, budget,
-              career_goal, is_admin, created_at
-       FROM users WHERE id = $1`,
+      `SELECT u.id, u.email, u.full_name, u.phone, u.is_admin, u.created_at,
+              up.degree_level, up.major, up.gpa, up.english_test, up.english_score,
+              up.target_countries, up.intake_term, up.budget_min, up.budget_max,
+              up.budget_currency, up.career_goal
+       FROM users u
+       LEFT JOIN user_profiles up ON up.user_id = u.id
+       WHERE u.id = $1`,
       [req.user.id]
     );
 
