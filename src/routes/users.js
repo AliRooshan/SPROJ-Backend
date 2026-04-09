@@ -4,6 +4,15 @@ const { authenticateToken } = require('../middleware/auth');
 
 const router = express.Router();
 
+const toNullableNumber = (value) => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  const trimmed = String(value).trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : null;
+};
+
 // ── Guard: ensure the requesting user can only access their own data ───────────
 const isSelf = (req, res, next) => {
   if (req.user.id !== req.params.id && !req.user.is_admin) {
@@ -46,6 +55,11 @@ router.put('/:id/profile', authenticateToken, isSelf, async (req, res) => {
   } = req.body;
 
   try {
+    const exists = await pool.query('SELECT 1 FROM users WHERE id = $1', [req.params.id]);
+    if (exists.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     await pool.query(
       `UPDATE users
        SET full_name = COALESCE($1, full_name), phone = COALESCE($2, phone)
@@ -75,15 +89,15 @@ router.put('/:id/profile', authenticateToken, isSelf, async (req, res) => {
         req.params.id,
         degree_level ?? null,
         major ?? null,
-        gpa ?? null,
+        toNullableNumber(gpa),
         english_test ?? null,
-        english_score ?? null,
+        toNullableNumber(english_score),
         intake_term ?? null,
-        budget_min ?? null,
-        budget_max ?? null,
+        toNullableNumber(budget_min),
+        toNullableNumber(budget_max),
         budget_currency || 'USD',
         career_goal ?? null,
-        JSON.stringify(target_countries || [])
+        JSON.stringify(Array.isArray(target_countries) ? target_countries : [])
       ]
     );
 
@@ -114,9 +128,12 @@ router.put('/:id/profile', authenticateToken, isSelf, async (req, res) => {
 router.get('/:id/saved-programs', authenticateToken, isSelf, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT p.*, sp.saved_at
+      `SELECT p.*, u.name AS university, c.name AS city, co.name AS country, sp.saved_at
        FROM saved_programs sp
        JOIN programs p ON sp.program_id = p.id
+       JOIN universities u ON u.id = p.university_id
+       JOIN cities c ON c.id = u.city_id
+       JOIN countries co ON co.id = c.country_id
        WHERE sp.user_id = $1
        ORDER BY sp.saved_at DESC`,
       [req.params.id]
@@ -224,9 +241,12 @@ router.delete('/:id/saved-scholarships/:scholarshipId', authenticateToken, isSel
 router.get('/:id/applications', authenticateToken, isSelf, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT a.*, p.name AS program_name, p.deadline
+      `SELECT a.*, p.name AS program_name, p.deadline, u.name AS university, co.name AS country
        FROM applications a
        JOIN programs p ON p.id = a.program_id
+       JOIN universities u ON u.id = p.university_id
+       JOIN cities c ON c.id = u.city_id
+       JOIN countries co ON co.id = c.country_id
        WHERE a.user_id = $1
        ORDER BY a.applied_at DESC`,
       [req.params.id]

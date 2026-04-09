@@ -37,7 +37,7 @@ router.get('/', async (req, res) => {
     }
     if (tuition_max) {
       params.push(Number(tuition_max));
-      query += ` AND p.tuition_amount <= $${params.length}`;
+      query += ` AND COALESCE(p.standard_tuition, p.tuition_amount) <= $${params.length}`;
     }
     if (duration) {
       params.push(`%${duration}%`);
