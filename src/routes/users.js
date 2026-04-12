@@ -38,6 +38,39 @@ router.get('/admin/stats', authenticateToken, requireAdmin, async (req, res) => 
   }
 });
 
+// ── GET /api/users/admin/growth ───────────────────────────────────────────────
+// Cumulative user count per day (UTC), last 30 days — for admin dashboard chart.
+router.get('/admin/growth', authenticateToken, requireAdmin, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `WITH days AS (
+         SELECT generate_series(
+           ((NOW() AT TIME ZONE 'utc')::date - INTERVAL '29 days'),
+           (NOW() AT TIME ZONE 'utc')::date,
+           INTERVAL '1 day'
+         )::date AS day
+       )
+       SELECT d.day::text AS day,
+              (
+                SELECT COUNT(*)::int
+                FROM users u
+                WHERE (u.created_at AT TIME ZONE 'utc')::date <= d.day
+              ) AS total
+       FROM days d
+       ORDER BY d.day ASC`
+    );
+    res.json({
+      points: result.rows.map((row) => ({
+        day: row.day,
+        total: Number(row.total) || 0
+      }))
+    });
+  } catch (err) {
+    console.error('GET /users/admin/growth error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch user growth' });
+  }
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PROFILE
 // ══════════════════════════════════════════════════════════════════════════════
