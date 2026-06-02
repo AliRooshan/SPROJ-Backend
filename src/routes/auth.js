@@ -249,7 +249,11 @@ const sendResetEmail = async (email, resetUrl) => {
     auth: {
       user: smtpUser,
       pass: smtpPass
-    }
+    },
+    connectionTimeout: 5000,
+    greetingTimeout: 5000,
+    socketTimeout: 10000,
+    family: 4
   });
 
   const mailOptions = {
@@ -318,7 +322,8 @@ router.post(
       );
 
       // Create reset link
-      const frontendUrl = process.env.CORS_ORIGIN || 'http://localhost:5173';
+      const corsOrigins = process.env.CORS_ORIGIN || 'http://localhost:5173';
+      const frontendUrl = process.env.FRONTEND_URL || corsOrigins.split(',')[0].trim();
       const resetUrl = `${frontendUrl}/reset-password?token=${token}`;
 
       // Send reset mail / fallback
