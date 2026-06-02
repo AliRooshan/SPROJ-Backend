@@ -16,45 +16,119 @@ const toEligibilityArray = (value) => {
 // Public. Supports query filters: ?country=UK  ?search=computer  ?tuition_max=20000
 router.get('/', async (req, res) => {
   try {
-    const { country, search, tuition_max, duration } = req.query;
+    const { page, limit, countries, degrees, durations, tuition_min, tuition_max, search, sort_by } = req.query;
 
-    let query = `
-      SELECT
-        p.*,
-        p.name AS program,
-        p.tuition_amount AS tuition,
-        u.name AS university,
-        c.name AS city,
-        co.name AS country
-      FROM programs p
-      JOIN universities u ON u.id = p.university_id
-      JOIN cities c ON c.id = u.city_id
-      JOIN countries co ON co.id = c.country_id
-      WHERE 1=1
-    `;
+    const countriesVal = countries || req.query.country;
+    const maxTuitionVal = tuition_max || req.query.tuition_max;
+
+    let whereClause = ' WHERE 1=1';
     const params = [];
 
-    if (country) {
-      params.push(country);
-      query += ` AND LOWER(co.name) = LOWER($${params.length})`;
+    if (countriesVal) {
+      const list = String(countriesVal).split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+      if (list.length > 0) {
+        params.push(list);
+        whereClause += ` AND LOWER(co.name) = ANY($${params.length})`;
+      }
+    }
+    if (degrees) {
+      const list = String(degrees).split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+      if (list.length > 0) {
+        params.push(list);
+        whereClause += ` AND LOWER(p.degree_level) = ANY($${params.length})`;
+      }
+    }
+    if (durations) {
+      const list = String(durations).split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+      if (list.length > 0) {
+        params.push(list);
+        whereClause += ` AND LOWER(p.duration) = ANY($${params.length})`;
+      }
     }
     if (search) {
       params.push(`%${search}%`);
-      query += ` AND (LOWER(p.name) LIKE LOWER($${params.length}) OR LOWER(u.name) LIKE LOWER($${params.length}))`;
+      whereClause += ` AND (LOWER(p.name) LIKE LOWER($${params.length}) OR LOWER(u.name) LIKE LOWER($${params.length}))`;
     }
-    if (tuition_max) {
-      params.push(Number(tuition_max));
-      query += ` AND COALESCE(p.standard_tuition, p.tuition_amount) <= $${params.length}`;
+    if (tuition_min) {
+      params.push(Number(tuition_min));
+      whereClause += ` AND COALESCE(p.standard_tuition, p.tuition_amount) >= $${params.length}`;
     }
-    if (duration) {
-      params.push(`%${duration}%`);
-      query += ` AND LOWER(p.duration) LIKE LOWER($${params.length})`;
+    if (maxTuitionVal) {
+      params.push(Number(maxTuitionVal));
+      whereClause += ` AND COALESCE(p.standard_tuition, p.tuition_amount) <= $${params.length}`;
     }
 
-    query += ' ORDER BY p.id ASC';
+    // Build Order By
+    let orderBy = ' ORDER BY p.id ASC';
+    if (sort_by === 'price_low') {
+      orderBy = ' ORDER BY COALESCE(p.standard_tuition, p.tuition_amount) ASC, p.id ASC';
+    } else if (sort_by === 'price_high') {
+      orderBy = ' ORDER BY COALESCE(p.standard_tuition, p.tuition_amount) DESC, p.id ASC';
+    }
 
-    const result = await pool.query(query, params);
-    res.json(result.rows);
+    // If page parameter is provided, we return paginated data
+    if (page) {
+      const countQuery = `
+        SELECT COUNT(*)
+        FROM programs p
+        JOIN universities u ON u.id = p.university_id
+        JOIN cities c ON c.id = u.city_id
+        JOIN countries co ON co.id = c.country_id
+        ${whereClause}
+      `;
+      const countRes = await pool.query(countQuery, params);
+      const total = parseInt(countRes.rows[0].count, 10);
+
+      const parsedPage = parseInt(page, 10) || 1;
+      const parsedLimit = parseInt(limit, 10) || 15;
+      const offset = (parsedPage - 1) * parsedLimit;
+
+      const mainQuery = `
+        SELECT
+          p.*,
+          p.name AS program,
+          p.tuition_amount AS tuition,
+          u.name AS university,
+          c.name AS city,
+          co.name AS country
+        FROM programs p
+        JOIN universities u ON u.id = p.university_id
+        JOIN cities c ON c.id = u.city_id
+        JOIN countries co ON co.id = c.country_id
+        ${whereClause}
+        ${orderBy}
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `;
+
+      const result = await pool.query(mainQuery, [...params, parsedLimit, offset]);
+      
+      res.json({
+        results: result.rows,
+        total,
+        page: parsedPage,
+        limit: parsedLimit,
+        totalPages: Math.ceil(total / parsedLimit)
+      });
+    } else {
+      // Return full list (for backward compatibility)
+      const mainQuery = `
+        SELECT
+          p.*,
+          p.name AS program,
+          p.tuition_amount AS tuition,
+          u.name AS university,
+          c.name AS city,
+          co.name AS country
+        FROM programs p
+        JOIN universities u ON u.id = p.university_id
+        JOIN cities c ON c.id = u.city_id
+        JOIN countries co ON co.id = c.country_id
+        ${whereClause}
+        ${orderBy}
+      `;
+      const result = await pool.query(mainQuery, params);
+      res.json(result.rows);
+    }
   } catch (err) {
     console.error('GET /programs error:', err.message);
     res.status(500).json({ error: 'Failed to fetch programs' });
@@ -75,11 +149,14 @@ router.get('/filters', async (req, res) => {
     `);
     const durationsRes = await pool.query('SELECT DISTINCT duration FROM programs WHERE duration IS NOT NULL ORDER BY duration');
     const degreesRes = await pool.query('SELECT DISTINCT degree_level AS degree FROM programs WHERE degree_level IS NOT NULL ORDER BY degree_level');
+    const maxTuitionRes = await pool.query('SELECT MAX(COALESCE(standard_tuition, tuition_amount)) AS max_tuition FROM programs');
+    const maxTuition = Math.ceil(Number(maxTuitionRes.rows[0].max_tuition || 0));
 
     res.json({
       countries: countriesRes.rows.map(r => r.country),
       durations: durationsRes.rows.map(r => r.duration),
-      degrees: degreesRes.rows.map(r => r.degree)
+      degrees: degreesRes.rows.map(r => r.degree),
+      maxTuition
     });
   } catch (err) {
     console.error('GET /programs/filters error:', err.message);

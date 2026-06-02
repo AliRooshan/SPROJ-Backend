@@ -16,33 +16,89 @@ const toRequirementsArray = (value) => {
 // Public. Supports: ?country=UK  ?type=Merit-based  ?search=chevening
 router.get('/', async (req, res) => {
   try {
-    const { country, type, search } = req.query;
+    const { page, limit, countries, types, country, type, search, sort_by } = req.query;
 
-    let query = `
-      SELECT s.*, co.name AS country
-      FROM scholarships s
-      LEFT JOIN countries co ON co.id = s.country_id
-      WHERE 1=1
-    `;
+    let whereClause = ' WHERE 1=1';
     const params = [];
 
-    if (country) {
-      params.push(country);
-      query += ` AND LOWER(co.name) = LOWER($${params.length})`;
+    // Support countries array/comma-separated and country string
+    const countriesVal = countries || country;
+    if (countriesVal) {
+      const list = String(countriesVal).split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+      if (list.length > 0) {
+        params.push(list);
+        whereClause += ` AND LOWER(co.name) = ANY($${params.length})`;
+      }
     }
-    if (type) {
-      params.push(type);
-      query += ` AND LOWER(type) = LOWER($${params.length})`;
+
+    // Support types array/comma-separated and type string
+    const typesVal = types || type;
+    if (typesVal) {
+      const list = String(typesVal).split(',').map(v => v.trim().toLowerCase()).filter(Boolean);
+      if (list.length > 0) {
+        params.push(list);
+        whereClause += ` AND LOWER(s.type) = ANY($${params.length})`;
+      }
     }
+
     if (search) {
       params.push(`%${search}%`);
-      query += ` AND (LOWER(name) LIKE LOWER($${params.length}) OR LOWER(provider) LIKE LOWER($${params.length}))`;
+      whereClause += ` AND (LOWER(s.name) LIKE LOWER($${params.length}) OR LOWER(s.provider) LIKE LOWER($${params.length}) OR LOWER(co.name) LIKE LOWER($${params.length}))`;
     }
 
-    query += ' ORDER BY s.id ASC';
+    // Build Order By
+    let orderBy = ' ORDER BY s.id ASC';
+    if (sort_by === 'amount_high') {
+      orderBy = ' ORDER BY s.amount DESC NULLS LAST, s.id ASC';
+    } else if (sort_by === 'amount_low') {
+      orderBy = ' ORDER BY s.amount ASC NULLS LAST, s.id ASC';
+    }
 
-    const result = await pool.query(query, params);
-    res.json(result.rows);
+    // If page parameter is provided, we return paginated data
+    if (page) {
+      const countQuery = `
+        SELECT COUNT(*)
+        FROM scholarships s
+        LEFT JOIN countries co ON co.id = s.country_id
+        ${whereClause}
+      `;
+      const countRes = await pool.query(countQuery, params);
+      const total = parseInt(countRes.rows[0].count, 10);
+
+      const parsedPage = parseInt(page, 10) || 1;
+      const parsedLimit = parseInt(limit, 10) || 15;
+      const offset = (parsedPage - 1) * parsedLimit;
+
+      const mainQuery = `
+        SELECT s.*, co.name AS country
+        FROM scholarships s
+        LEFT JOIN countries co ON co.id = s.country_id
+        ${whereClause}
+        ${orderBy}
+        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      `;
+
+      const result = await pool.query(mainQuery, [...params, parsedLimit, offset]);
+      
+      res.json({
+        results: result.rows,
+        total,
+        page: parsedPage,
+        limit: parsedLimit,
+        totalPages: Math.ceil(total / parsedLimit)
+      });
+    } else {
+      // Return full list (for backward compatibility)
+      const mainQuery = `
+        SELECT s.*, co.name AS country
+        FROM scholarships s
+        LEFT JOIN countries co ON co.id = s.country_id
+        ${whereClause}
+        ${orderBy}
+      `;
+      const result = await pool.query(mainQuery, params);
+      res.json(result.rows);
+    }
   } catch (err) {
     console.error('GET /scholarships error:', err.message);
     res.status(500).json({ error: 'Failed to fetch scholarships' });
