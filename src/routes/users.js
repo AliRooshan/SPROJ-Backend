@@ -236,9 +236,10 @@ router.delete('/:id/saved-programs/:programId', authenticateToken, isSelf, async
 router.get('/:id/saved-scholarships', authenticateToken, isSelf, async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT s.*, ss.saved_at
+      `SELECT s.*, co.name AS country, ss.saved_at
        FROM saved_scholarships ss
        JOIN scholarships s ON ss.scholarship_id = s.id
+       LEFT JOIN countries co ON co.id = s.country_id
        WHERE ss.user_id = $1
        ORDER BY ss.saved_at DESC`,
       [req.params.id]
