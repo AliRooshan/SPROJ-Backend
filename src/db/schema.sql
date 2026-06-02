@@ -140,6 +140,18 @@ CREATE TABLE saved_scholarships (
   PRIMARY KEY(user_id, scholarship_id)
 );
 
+CREATE TABLE program_matches (
+  student_id   UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  program_id   INT NOT NULL REFERENCES programs(id) ON DELETE CASCADE,
+  match_score  NUMERIC(5,2) NOT NULL, -- Score from 0.00 to 100.00
+  created_at   TIMESTAMPTZ DEFAULT NOW(),
+  
+  PRIMARY KEY (student_id, program_id),
+  CONSTRAINT chk_match_score_range CHECK (match_score BETWEEN 0 AND 100)
+);
+
+CREATE INDEX idx_program_matches_student ON program_matches(student_id);
+
 -- EXTRA TABLES
 CREATE TABLE currency_rates (
   currency CHAR(3) PRIMARY KEY,

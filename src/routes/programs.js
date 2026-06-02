@@ -18,6 +18,18 @@ router.get('/', async (req, res) => {
   try {
     const { page, limit, countries, degrees, durations, tuition_min, tuition_max, search, sort_by } = req.query;
 
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    let userId = null;
+    if (token) {
+      try {
+        const decoded = require('jsonwebtoken').verify(token, process.env.JWT_SECRET);
+        userId = decoded.id;
+      } catch (err) {
+        // Ignore invalid token
+      }
+    }
+
     const countriesVal = countries || req.query.country;
     const maxTuitionVal = tuition_max || req.query.tuition_max;
 
@@ -64,6 +76,10 @@ router.get('/', async (req, res) => {
       orderBy = ' ORDER BY COALESCE(p.standard_tuition, p.tuition_amount) ASC, p.id ASC';
     } else if (sort_by === 'price_high') {
       orderBy = ' ORDER BY COALESCE(p.standard_tuition, p.tuition_amount) DESC, p.id ASC';
+    } else if (sort_by === 'match_low' && userId) {
+      orderBy = ' ORDER BY pm.match_score ASC NULLS LAST, p.id ASC';
+    } else if (sort_by === 'match_high' && userId) {
+      orderBy = ' ORDER BY pm.match_score DESC NULLS LAST, p.id ASC';
     }
 
     // If page parameter is provided, we return paginated data
@@ -83,24 +99,52 @@ router.get('/', async (req, res) => {
       const parsedLimit = parseInt(limit, 10) || 15;
       const offset = (parsedPage - 1) * parsedLimit;
 
-      const mainQuery = `
-        SELECT
-          p.*,
-          p.name AS program,
-          p.tuition_amount AS tuition,
-          u.name AS university,
-          c.name AS city,
-          co.name AS country
-        FROM programs p
-        JOIN universities u ON u.id = p.university_id
-        JOIN cities c ON c.id = u.city_id
-        JOIN countries co ON co.id = c.country_id
-        ${whereClause}
-        ${orderBy}
-        LIMIT $${params.length + 1} OFFSET $${params.length + 2}
-      `;
+      let mainQuery = '';
+      let queryParams = [...params];
+      if (userId) {
+        queryParams.push(userId);
+        const matchParamIndex = queryParams.length;
+        mainQuery = `
+          SELECT
+            p.*,
+            p.name AS program,
+            p.tuition_amount AS tuition,
+            u.name AS university,
+            c.name AS city,
+            co.name AS country,
+            pm.match_score
+          FROM programs p
+          JOIN universities u ON u.id = p.university_id
+          JOIN cities c ON c.id = u.city_id
+          JOIN countries co ON co.id = c.country_id
+          LEFT JOIN program_matches pm ON pm.program_id = p.id AND pm.student_id = $${matchParamIndex}
+          ${whereClause}
+          ${orderBy}
+          LIMIT $${matchParamIndex + 1} OFFSET $${matchParamIndex + 2}
+        `;
+        queryParams.push(parsedLimit, offset);
+      } else {
+        mainQuery = `
+          SELECT
+            p.*,
+            p.name AS program,
+            p.tuition_amount AS tuition,
+            u.name AS university,
+            c.name AS city,
+            co.name AS country,
+            NULL::numeric AS match_score
+          FROM programs p
+          JOIN universities u ON u.id = p.university_id
+          JOIN cities c ON c.id = u.city_id
+          JOIN countries co ON co.id = c.country_id
+          ${whereClause}
+          ${orderBy}
+          LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+        `;
+        queryParams.push(parsedLimit, offset);
+      }
 
-      const result = await pool.query(mainQuery, [...params, parsedLimit, offset]);
+      const result = await pool.query(mainQuery, queryParams);
       
       res.json({
         results: result.rows,
@@ -111,22 +155,47 @@ router.get('/', async (req, res) => {
       });
     } else {
       // Return full list (for backward compatibility)
-      const mainQuery = `
-        SELECT
-          p.*,
-          p.name AS program,
-          p.tuition_amount AS tuition,
-          u.name AS university,
-          c.name AS city,
-          co.name AS country
-        FROM programs p
-        JOIN universities u ON u.id = p.university_id
-        JOIN cities c ON c.id = u.city_id
-        JOIN countries co ON co.id = c.country_id
-        ${whereClause}
-        ${orderBy}
-      `;
-      const result = await pool.query(mainQuery, params);
+      let mainQuery = '';
+      let queryParams = [...params];
+      if (userId) {
+        queryParams.push(userId);
+        const matchParamIndex = queryParams.length;
+        mainQuery = `
+          SELECT
+            p.*,
+            p.name AS program,
+            p.tuition_amount AS tuition,
+            u.name AS university,
+            c.name AS city,
+            co.name AS country,
+            pm.match_score
+          FROM programs p
+          JOIN universities u ON u.id = p.university_id
+          JOIN cities c ON c.id = u.city_id
+          JOIN countries co ON co.id = c.country_id
+          LEFT JOIN program_matches pm ON pm.program_id = p.id AND pm.student_id = $${matchParamIndex}
+          ${whereClause}
+          ${orderBy}
+        `;
+      } else {
+        mainQuery = `
+          SELECT
+            p.*,
+            p.name AS program,
+            p.tuition_amount AS tuition,
+            u.name AS university,
+            c.name AS city,
+            co.name AS country,
+            NULL::numeric AS match_score
+          FROM programs p
+          JOIN universities u ON u.id = p.university_id
+          JOIN cities c ON c.id = u.city_id
+          JOIN countries co ON co.id = c.country_id
+          ${whereClause}
+          ${orderBy}
+        `;
+      }
+      const result = await pool.query(mainQuery, queryParams);
       res.json(result.rows);
     }
   } catch (err) {
@@ -202,21 +271,57 @@ router.get('/currencies', async (req, res) => {
 // Public.
 router.get('/:id', async (req, res) => {
   try {
-    const result = await pool.query(
-      `SELECT
-         p.*,
-         p.name AS program,
-         p.tuition_amount AS tuition,
-         u.name AS university,
-         c.name AS city,
-         co.name AS country
-       FROM programs p
-       JOIN universities u ON u.id = p.university_id
-       JOIN cities c ON c.id = u.city_id
-       JOIN countries co ON co.id = c.country_id
-       WHERE p.id = $1`,
-      [req.params.id]
-    );
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    let userId = null;
+    if (token) {
+      try {
+        const decoded = require('jsonwebtoken').verify(token, process.env.JWT_SECRET);
+        userId = decoded.id;
+      } catch (err) {
+        // Ignore
+      }
+    }
+
+    let query = '';
+    const params = [req.params.id];
+    if (userId) {
+      params.push(userId);
+      query = `
+        SELECT
+          p.*,
+          p.name AS program,
+          p.tuition_amount AS tuition,
+          u.name AS university,
+          c.name AS city,
+          co.name AS country,
+          pm.match_score
+        FROM programs p
+        JOIN universities u ON u.id = p.university_id
+        JOIN cities c ON c.id = u.city_id
+        JOIN countries co ON co.id = c.country_id
+        LEFT JOIN program_matches pm ON pm.program_id = p.id AND pm.student_id = $2
+        WHERE p.id = $1
+      `;
+    } else {
+      query = `
+        SELECT
+          p.*,
+          p.name AS program,
+          p.tuition_amount AS tuition,
+          u.name AS university,
+          c.name AS city,
+          co.name AS country,
+          NULL::numeric AS match_score
+        FROM programs p
+        JOIN universities u ON u.id = p.university_id
+        JOIN cities c ON c.id = u.city_id
+        JOIN countries co ON co.id = c.country_id
+        WHERE p.id = $1
+      `;
+    }
+
+    const result = await pool.query(query, params);
     if (result.rows.length === 0) {
       return res.status(404).json({ error: 'Program not found' });
     }
