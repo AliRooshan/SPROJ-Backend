@@ -2,6 +2,8 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
+const crypto = require('crypto');
+const nodemailer = require('nodemailer');
 const pool = require('../db');
 const { authenticateToken } = require('../middleware/auth');
 
@@ -222,6 +224,168 @@ router.put(
     } catch (err) {
       console.error('PUT /auth/change-password error:', err.message);
       res.status(500).json({ error: 'Failed to update password' });
+    }
+  }
+);
+
+// ── Email Helper ──────────────────────────────────────────────────────────────
+const sendResetEmail = async (email, resetUrl) => {
+  const smtpUser = process.env.SMTP_USER;
+  const smtpPass = process.env.SMTP_PASS ? process.env.SMTP_PASS.replace(/\s+/g, '') : null;
+
+  if (!smtpUser || !smtpPass) {
+    console.log('\n==================================================');
+    console.log(`[DEVELOPMENT ONLY] SMTP credentials not fully set.`);
+    console.log(`Password reset link for ${email}:`);
+    console.log(resetUrl);
+    console.log('==================================================\n');
+    return false;
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: process.env.SMTP_HOST || 'smtp.gmail.com',
+    port: parseInt(process.env.SMTP_PORT || '587', 10),
+    secure: process.env.SMTP_PORT === '465',
+    auth: {
+      user: smtpUser,
+      pass: smtpPass
+    }
+  });
+
+  const mailOptions = {
+    from: `"EdVoyage Support" <${smtpUser}>`,
+    to: email,
+    subject: 'Reset Your EdVoyage Password',
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #e0e0e0; border-radius: 10px; background-color: #ffffff;">
+        <h2 style="color: #4f46e5; text-align: center; margin-bottom: 20px;">EdVoyage Password Reset</h2>
+        <p style="font-size: 16px; color: #374151; line-height: 1.5;">Hello,</p>
+        <p style="font-size: 16px; color: #374151; line-height: 1.5;">You requested to reset your password for your EdVoyage account. Please click the button below to reset it. This link is valid for 1 hour.</p>
+        <div style="text-align: center; margin: 30px 0;">
+          <a href="${resetUrl}" style="background: linear-gradient(to right, #4f46e5, #9333ea); color: #ffffff; padding: 12px 24px; text-decoration: none; border-radius: 8px; font-weight: bold; display: inline-block; box-shadow: 0 4px 6px -1px rgba(79, 70, 229, 0.2);">Reset Password</a>
+        </div>
+        <p style="font-size: 14px; color: #4b5563;">If the button above does not work, copy and paste the following URL into your browser:</p>
+        <p style="word-break: break-all; color: #2563eb; font-size: 14px; background-color: #f3f4f6; padding: 10px; border-radius: 6px; font-family: monospace;">${resetUrl}</p>
+        <p style="margin-top: 30px; border-top: 1px solid #e5e7eb; padding-top: 20px; color: #9ca3af; font-size: 12px; text-align: center;">
+          If you did not request a password reset, please ignore this email.
+        </p>
+      </div>
+    `
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Password reset email successfully sent to ${email}`);
+    return true;
+  } catch (err) {
+    console.error(`Failed to send email via SMTP:`, err.message);
+    console.log('\n==================================================');
+    console.log(`[FALLBACK] Password reset link for ${email}:`);
+    console.log(resetUrl);
+    console.log('==================================================\n');
+    return false;
+  }
+};
+
+// ── POST /api/auth/forgot-password ─────────────────────────────────────────────
+router.post(
+  '/forgot-password',
+  [body('email').isEmail().withMessage('Valid email required')],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { email } = req.body;
+
+    try {
+      // Check if user exists
+      const userResult = await pool.query('SELECT id FROM users WHERE email = $1', [email]);
+      if (userResult.rows.length === 0) {
+        return res.status(404).json({ error: 'No account found with this email address.' });
+      }
+
+      // Generate secure 32-byte hex token
+      const token = crypto.randomBytes(32).toString('hex');
+      const expiresAt = new Date(Date.now() + 3600000); // 1 hour
+
+      // Save token in DB, clearing existing ones for this email first
+      await pool.query('DELETE FROM password_resets WHERE email = $1', [email]);
+      await pool.query(
+        'INSERT INTO password_resets (email, token, expires_at) VALUES ($1, $2, $3)',
+        [email, token, expiresAt]
+      );
+
+      // Create reset link
+      const frontendUrl = process.env.CORS_ORIGIN || 'http://localhost:5173';
+      const resetUrl = `${frontendUrl}/reset-password?token=${token}`;
+
+      // Send reset mail / fallback
+      await sendResetEmail(email, resetUrl);
+
+      res.json({ message: 'A password reset link has been sent to your email.' });
+    } catch (err) {
+      console.error('POST /auth/forgot-password error:', err.message);
+      res.status(500).json({ error: 'Failed to process forgot password request' });
+    }
+  }
+);
+
+// ── POST /api/auth/reset-password ──────────────────────────────────────────────
+router.post(
+  '/reset-password',
+  [
+    body('token').notEmpty().withMessage('Reset token is required'),
+    body('password').isLength({ min: 6 }).withMessage('Password must be at least 6 characters')
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
+    }
+
+    const { token, password } = req.body;
+
+    try {
+      // Find token
+      const tokenResult = await pool.query(
+        'SELECT email, expires_at FROM password_resets WHERE token = $1',
+        [token]
+      );
+
+      if (tokenResult.rows.length === 0) {
+        return res.status(400).json({ error: 'Invalid or expired password reset token' });
+      }
+
+      const { email, expires_at } = tokenResult.rows[0];
+
+      // Check expiry
+      if (new Date() > new Date(expires_at)) {
+        await pool.query('DELETE FROM password_resets WHERE token = $1', [token]);
+        return res.status(400).json({ error: 'Invalid or expired password reset token' });
+      }
+
+      // Hash new password
+      const passwordHash = await bcrypt.hash(password, 12);
+
+      // Update password
+      const updateResult = await pool.query(
+        'UPDATE users SET password_hash = $1 WHERE email = $2 RETURNING id',
+        [passwordHash, email]
+      );
+
+      if (updateResult.rows.length === 0) {
+        return res.status(404).json({ error: 'User account not found' });
+      }
+
+      // Clean up token
+      await pool.query('DELETE FROM password_resets WHERE email = $1', [email]);
+
+      res.json({ message: 'Password has been reset successfully. You can now log in with your new password.' });
+    } catch (err) {
+      console.error('POST /auth/reset-password error:', err.message);
+      res.status(500).json({ error: 'Failed to reset password' });
     }
   }
 );
