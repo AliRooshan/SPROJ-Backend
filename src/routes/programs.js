@@ -157,17 +157,17 @@ router.post(
   authenticateToken,
   requireAdmin,
   [
-    body('university_id').isInt({ min: 1 }).withMessage('Valid university_id is required'),
-    body('name').trim().notEmpty().withMessage('Program name is required'),
-    body('degree_level').isIn(['Masters', 'PHD']).withMessage('degree_level must be Masters or PHD'),
-    body('field_of_study').trim().notEmpty().withMessage('field_of_study is required'),
-    body('deadline').trim().notEmpty().withMessage('deadline is required'),
-    body('tuition_amount').isFloat({ gt: 0 }).withMessage('tuition_amount must be > 0'),
-    body('currency').isLength({ min: 3, max: 3 }).withMessage('currency must be 3-letter code'),
-    body('duration').trim().notEmpty().withMessage('duration is required'),
-    body('description').trim().notEmpty().withMessage('description is required'),
-    body('eligibility').isArray({ min: 1 }).withMessage('eligibility is required'),
-    body('website').isURL().withMessage('website must be a valid URL')
+    body('university_id').optional().isInt({ min: 1 }).withMessage('Valid university_id must be a valid ID'),
+    body('name').optional().trim().notEmpty().withMessage('Program name cannot be empty'),
+    body('degree_level').optional().isIn(['Masters', 'PHD']).withMessage('degree_level must be Masters or PHD'),
+    body('field_of_study').optional().trim().notEmpty().withMessage('field_of_study cannot be empty'),
+    body('deadline').optional().trim().notEmpty().withMessage('deadline cannot be empty'),
+    body('tuition_amount').optional().isFloat({ min: 0 }).withMessage('tuition_amount must be >= 0'),
+    body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('currency must be 3-letter code'),
+    body('duration').optional().trim().notEmpty().withMessage('duration cannot be empty'),
+    body('description').optional().trim().notEmpty().withMessage('description cannot be empty'),
+    body('eligibility').optional().isArray().withMessage('eligibility must be an array'),
+    body('website').optional().isURL().withMessage('website must be a valid URL')
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -188,13 +188,21 @@ router.post(
     } = req.body;
 
     try {
-      const uniCheck = await pool.query('SELECT id FROM universities WHERE id = $1', [university_id]);
-      if (uniCheck.rows.length === 0) {
-        return res.status(400).json({ error: 'Unknown university_id' });
+      if (university_id) {
+        const uniCheck = await pool.query('SELECT id FROM universities WHERE id = $1', [university_id]);
+        if (uniCheck.rows.length === 0) {
+          return res.status(400).json({ error: 'Unknown university_id' });
+        }
       }
-      const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [String(currency).toUpperCase()]);
-      if (currencyCheck.rows.length === 0) {
-        return res.status(400).json({ error: 'Unknown currency code' });
+      let currencyCode = null;
+      if (currency) {
+        currencyCode = String(currency).toUpperCase();
+        const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [currencyCode]);
+        if (currencyCheck.rows.length === 0) {
+          return res.status(400).json({ error: 'Unknown currency code' });
+        }
+      } else {
+        currencyCode = 'USD';
       }
 
       const result = await pool.query(
@@ -205,16 +213,16 @@ router.post(
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          RETURNING *`,
         [
-          university_id,
-          name,
-          degree_level,
-          field_of_study,
+          university_id || null,
+          name || null,
+          degree_level || null,
+          field_of_study || null,
           deadline || null,
-          tuition_amount,
-          String(currency).toUpperCase(),
-          duration,
+          tuition_amount !== undefined ? tuition_amount : null,
+          currencyCode,
+          duration || null,
           description || null,
-          JSON.stringify(toEligibilityArray(eligibility)),
+          eligibility !== undefined ? JSON.stringify(toEligibilityArray(eligibility)) : '[]',
           website || null
         ]
       );
@@ -248,24 +256,27 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
     if (current.rows.length === 0) return res.status(404).json({ error: 'Program not found' });
     const existing = current.rows[0];
 
-    if (university_id) {
-      const uniCheck = await pool.query('SELECT id FROM universities WHERE id = $1', [university_id]);
+    const nextUniversityId = university_id !== undefined ? university_id : existing.university_id;
+    if (nextUniversityId) {
+      const uniCheck = await pool.query('SELECT id FROM universities WHERE id = $1', [nextUniversityId]);
       if (uniCheck.rows.length === 0) {
         return res.status(400).json({ error: 'Unknown university_id' });
       }
     }
     const nextDegree = degree_level ?? existing.degree_level;
-    if (!['Masters', 'PHD'].includes(nextDegree)) {
+    if (nextDegree !== null && !['Masters', 'PHD'].includes(nextDegree)) {
       return res.status(400).json({ error: 'degree_level must be Masters or PHD' });
     }
-    const nextTuition = tuition_amount ?? existing.tuition_amount;
-    if (Number(nextTuition) <= 0) {
-      return res.status(400).json({ error: 'tuition_amount must be > 0' });
+    const nextTuition = tuition_amount !== undefined ? (tuition_amount !== null ? Number(tuition_amount) : null) : existing.tuition_amount;
+    if (nextTuition !== null && nextTuition < 0) {
+      return res.status(400).json({ error: 'tuition_amount must be >= 0' });
     }
-    const nextCurrency = String(currency || existing.currency).toUpperCase();
-    const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [nextCurrency]);
-    if (currencyCheck.rows.length === 0) {
-      return res.status(400).json({ error: 'Unknown currency code' });
+    const nextCurrency = currency !== undefined ? (currency ? String(currency).toUpperCase() : null) : existing.currency;
+    if (nextCurrency) {
+      const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [nextCurrency]);
+      if (currencyCheck.rows.length === 0) {
+        return res.status(400).json({ error: 'Unknown currency code' });
+      }
     }
 
     const result = await pool.query(
@@ -276,17 +287,17 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
        WHERE id=$12
        RETURNING *`,
       [
-        university_id || existing.university_id,
-        name ?? existing.name,
-        degree_level ?? existing.degree_level,
-        field_of_study ?? existing.field_of_study,
-        deadline ?? existing.deadline,
-        tuition_amount ?? existing.tuition_amount,
+        nextUniversityId,
+        name !== undefined ? name : existing.name,
+        degree_level !== undefined ? degree_level : existing.degree_level,
+        field_of_study !== undefined ? field_of_study : existing.field_of_study,
+        deadline !== undefined ? deadline : existing.deadline,
+        nextTuition,
         nextCurrency,
-        duration ?? existing.duration,
-        description ?? existing.description,
-        JSON.stringify(eligibility !== undefined ? toEligibilityArray(eligibility) : existing.eligibility),
-        website ?? existing.website,
+        duration !== undefined ? duration : existing.duration,
+        description !== undefined ? description : existing.description,
+        eligibility !== undefined ? JSON.stringify(toEligibilityArray(eligibility)) : existing.eligibility,
+        website !== undefined ? website : existing.website,
         req.params.id
       ]
     );

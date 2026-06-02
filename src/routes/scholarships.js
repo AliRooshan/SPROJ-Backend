@@ -121,49 +121,58 @@ router.post(
   authenticateToken,
   requireAdmin,
   [
-    body('name').trim().notEmpty().withMessage('Scholarship name is required'),
-    body('provider').trim().notEmpty().withMessage('provider is required'),
-    body('amount').isFloat({ gt: 0 }).withMessage('amount must be > 0'),
-    body('deadline').trim().notEmpty().withMessage('deadline is required'),
-    body('country_id').isInt({ min: 1 }).withMessage('country_id is required'),
-    body('type').trim().notEmpty().withMessage('type is required'),
-    body('description').trim().notEmpty().withMessage('description is required'),
-    body('requirements').isArray({ min: 1 }).withMessage('requirements is required'),
-    body('website').isURL().withMessage('website must be a valid URL'),
-    body('currency').isLength({ min: 3, max: 3 }).withMessage('currency must be 3 letters')
+    body('name').optional().trim().notEmpty().withMessage('Scholarship name cannot be empty'),
+    body('provider').optional().trim().notEmpty().withMessage('provider cannot be empty'),
+    body('amount').optional().isFloat({ min: 0 }).withMessage('amount must be >= 0'),
+    body('deadline').optional().trim().notEmpty().withMessage('deadline cannot be empty'),
+    body('country_id').optional().isInt({ min: 1 }).withMessage('country_id must be a valid ID'),
+    body('type').optional().trim().notEmpty().withMessage('type cannot be empty'),
+    body('description').optional().trim().notEmpty().withMessage('description cannot be empty'),
+    body('requirements').optional().isArray().withMessage('requirements must be an array'),
+    body('website').optional().isURL().withMessage('website must be a valid URL'),
+    body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('currency must be 3 letters'),
+    body('benefits').optional().isString().withMessage('benefits must be a string')
   ],
   async (req, res) => {
     const errors = validationResult(req);
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-    const { name, provider, amount, deadline, country_id, type, description, requirements, website, currency } = req.body;
+    const { name, provider, amount, deadline, country_id, type, description, requirements, website, currency, benefits } = req.body;
 
     try {
-      const countryCheck = await pool.query('SELECT id FROM countries WHERE id = $1', [country_id]);
-      if (countryCheck.rows.length === 0) {
-        return res.status(400).json({ error: 'Unknown country_id' });
+      if (country_id) {
+        const countryCheck = await pool.query('SELECT id FROM countries WHERE id = $1', [country_id]);
+        if (countryCheck.rows.length === 0) {
+          return res.status(400).json({ error: 'Unknown country_id' });
+        }
       }
-      const currencyCode = String(currency || '').toUpperCase();
-      const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [currencyCode]);
-      if (currencyCheck.rows.length === 0) {
-        return res.status(400).json({ error: 'Unknown currency code' });
+      let currencyCode = null;
+      if (currency) {
+        currencyCode = String(currency).toUpperCase();
+        const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [currencyCode]);
+        if (currencyCheck.rows.length === 0) {
+          return res.status(400).json({ error: 'Unknown currency code' });
+        }
+      } else {
+        currencyCode = 'USD';
       }
 
       const result = await pool.query(
-        `INSERT INTO scholarships (name, provider, amount, deadline, country_id, type, description, requirements, website, currency)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+        `INSERT INTO scholarships (name, provider, amount, deadline, country_id, type, description, requirements, website, currency, benefits)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
          RETURNING *`,
         [
-          name,
-          provider,
-          amount,
-          deadline,
-          country_id,
-          type,
-          description,
-          JSON.stringify(toRequirementsArray(requirements)),
-          website,
-          currencyCode
+          name || null,
+          provider || null,
+          amount !== undefined ? amount : null,
+          deadline || null,
+          country_id || null,
+          type || null,
+          description || null,
+          requirements !== undefined ? JSON.stringify(toRequirementsArray(requirements)) : '[]',
+          website || null,
+          currencyCode,
+          benefits || null
         ]
       );
       res.status(201).json(result.rows[0]);
@@ -177,46 +186,51 @@ router.post(
 // ── PUT /api/scholarships/:id ─────────────────────────────────────────────────
 // Admin only.
 router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
-  const { name, provider, amount, deadline, country_id, type, description, requirements, website, currency } = req.body;
+  const { name, provider, amount, deadline, country_id, type, description, requirements, website, currency, benefits } = req.body;
 
   try {
     const current = await pool.query('SELECT * FROM scholarships WHERE id = $1', [req.params.id]);
     if (current.rows.length === 0) return res.status(404).json({ error: 'Scholarship not found' });
     const existing = current.rows[0];
 
-    const nextCountryId = country_id ?? existing.country_id;
-    const countryCheck = await pool.query('SELECT id FROM countries WHERE id = $1', [nextCountryId]);
-    if (countryCheck.rows.length === 0) {
-      return res.status(400).json({ error: 'Unknown country_id' });
+    const nextCountryId = country_id !== undefined ? country_id : existing.country_id;
+    if (nextCountryId) {
+      const countryCheck = await pool.query('SELECT id FROM countries WHERE id = $1', [nextCountryId]);
+      if (countryCheck.rows.length === 0) {
+        return res.status(400).json({ error: 'Unknown country_id' });
+      }
     }
 
-    const nextCurrency = String(currency || existing.currency).toUpperCase();
-    const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [nextCurrency]);
-    if (currencyCheck.rows.length === 0) {
-      return res.status(400).json({ error: 'Unknown currency code' });
+    const nextCurrency = currency !== undefined ? (currency ? String(currency).toUpperCase() : null) : existing.currency;
+    if (nextCurrency) {
+      const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [nextCurrency]);
+      if (currencyCheck.rows.length === 0) {
+        return res.status(400).json({ error: 'Unknown currency code' });
+      }
     }
-    const nextAmount = Number(amount ?? existing.amount);
-    if (!Number.isFinite(nextAmount) || nextAmount <= 0) {
-      return res.status(400).json({ error: 'amount must be > 0' });
+    const nextAmount = amount !== undefined ? (amount !== null ? Number(amount) : null) : existing.amount;
+    if (nextAmount !== null && (!Number.isFinite(nextAmount) || nextAmount < 0)) {
+      return res.status(400).json({ error: 'amount must be >= 0' });
     }
 
     const result = await pool.query(
       `UPDATE scholarships
        SET name=$1, provider=$2, amount=$3, deadline=$4, country_id=$5, type=$6,
-           description=$7, requirements=$8, website=$9, currency=$10
-       WHERE id=$11
+           description=$7, requirements=$8, website=$9, currency=$10, benefits=$11
+       WHERE id=$12
        RETURNING *`,
       [
-        name ?? existing.name,
-        provider ?? existing.provider,
+        name !== undefined ? name : existing.name,
+        provider !== undefined ? provider : existing.provider,
         nextAmount,
-        deadline ?? existing.deadline,
+        deadline !== undefined ? deadline : existing.deadline,
         nextCountryId,
-        type ?? existing.type,
-        description ?? existing.description,
-        JSON.stringify(requirements !== undefined ? toRequirementsArray(requirements) : existing.requirements),
-        website ?? existing.website,
+        type !== undefined ? type : existing.type,
+        description !== undefined ? description : existing.description,
+        requirements !== undefined ? JSON.stringify(toRequirementsArray(requirements)) : existing.requirements,
+        website !== undefined ? website : existing.website,
         nextCurrency,
+        benefits !== undefined ? benefits : existing.benefits,
         req.params.id
       ]
     );

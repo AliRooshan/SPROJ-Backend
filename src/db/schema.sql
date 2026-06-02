@@ -24,17 +24,17 @@ CREATE TABLE universities (
 
 CREATE TABLE programs (
   id            SERIAL PRIMARY KEY,
-  university_id INT NOT NULL REFERENCES universities(id) ON DELETE CASCADE,
-  name          TEXT NOT NULL,
-  degree_level  TEXT NOT NULL,  -- Master's, PhD
-  field_of_study TEXT NOT NULL,
+  university_id INT REFERENCES universities(id) ON DELETE CASCADE,
+  name          TEXT,
+  degree_level  TEXT,  -- Master's, PhD
+  field_of_study TEXT,
   deadline      DATE,
-  tuition_amount NUMERIC NOT NULL,
-  currency      CHAR(3) NOT NULL DEFAULT 'USD',  -- ISO 4217
+  tuition_amount NUMERIC,
+  currency      CHAR(3) DEFAULT 'USD',  -- ISO 4217
   standard_tuition NUMERIC,
-  duration      TEXT NOT NULL,
+  duration      TEXT,
   description   TEXT,
-  eligibility   JSONB NOT NULL DEFAULT '[]',
+  eligibility   JSONB DEFAULT '[]',
   website       TEXT,
   created_at    TIMESTAMPTZ DEFAULT NOW(),
   
@@ -43,20 +43,19 @@ CREATE TABLE programs (
 
 CREATE TABLE scholarships (
   id          SERIAL PRIMARY KEY,
-  name        TEXT NOT NULL,
-  provider    TEXT NOT NULL,
-  amount      NUMERIC NOT NULL,
-  standard_amount NUMERIC,
-  currency    CHAR(3) NOT NULL DEFAULT 'USD',
-  deadline    DATE NOT NULL,
+  name        TEXT,
+  provider    TEXT,
+  amount      TEXT,
+  currency    CHAR(3),
+  deadline    TEXT,
   country_id  INT REFERENCES countries(id) ON DELETE CASCADE,
-  type        TEXT NOT NULL,  -- 'merit', 'need-based', 'sports', etc.
+  type        TEXT,  -- 'merit', 'need-based', 'sports', etc.
   description TEXT,
-  requirements      JSONB NOT NULL DEFAULT '[]',
+  requirements      JSONB DEFAULT '[]',
+  benefits    TEXT,
   website     TEXT,
   created_at  TIMESTAMPTZ DEFAULT NOW(),
   
-  CONSTRAINT chk_amount_positive CHECK (amount >= 0)
 );
 
 CREATE TABLE living_costs (
@@ -187,22 +186,3 @@ CREATE TRIGGER trg_programs_standard_tuition
 BEFORE INSERT OR UPDATE ON programs
 FOR EACH ROW
 EXECUTE FUNCTION update_programs_standard_tuition();
-
--- Function
-CREATE OR REPLACE FUNCTION update_scholarships_standard_amount()
-RETURNS TRIGGER AS $$
-BEGIN
-  NEW.standard_amount := NEW.amount *
-    COALESCE(
-      (SELECT rate_to_usd FROM currency_rates WHERE currency = NEW.currency),
-      1   
-    );
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
--- Trigger
-CREATE TRIGGER trg_scholarships_standard_amount
-BEFORE INSERT OR UPDATE ON scholarships
-FOR EACH ROW
-EXECUTE FUNCTION update_scholarships_standard_amount();
