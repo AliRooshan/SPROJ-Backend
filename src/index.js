@@ -59,6 +59,39 @@ app.use('/api/costs', costRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/visa', visaRoutes);
 
+// ── Chat Proxy ────────────────────────────────────────────────────────────────
+app.post('/api/chat', async (req, res) => {
+  try {
+    const { message, userId, email, name, ...profile } = req.body;
+    const webhookUrl = process.env.N8N_CHAT_WEBHOOK_URL || 'http://localhost:5678/webhook/edvoyage-chat';
+
+    const response = await fetch(webhookUrl, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        message,
+        userId,
+        email,
+        name,
+        ...profile
+      })
+    });
+
+    if (!response.ok) {
+      console.error(`n8n webhook error: ${response.status} ${response.statusText}`);
+      return res.status(response.status).json({ error: 'Failed to communicate with AI chat agent' });
+    }
+
+    const data = await response.json();
+    res.json(data);
+  } catch (err) {
+    console.error('Chat proxy error:', err.message);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+});
+
 // ── 404 handler ────────────────────────────────────────────────────────────────
 app.use((req, res) => {
   res.status(404).json({ error: `Route ${req.method} ${req.path} not found` });
