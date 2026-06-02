@@ -16,7 +16,7 @@ const toRequirementsArray = (value) => {
 // Public. Supports: ?country=UK  ?type=Merit-based  ?search=chevening
 router.get('/', async (req, res) => {
   try {
-    const { page, limit, countries, types, country, type, search, sort_by } = req.query;
+    const { page, limit, countries, types, country, type, search, sort_by, amount_max } = req.query;
 
     let whereClause = ' WHERE 1=1';
     const params = [];
@@ -44,6 +44,16 @@ router.get('/', async (req, res) => {
     if (search) {
       params.push(`%${search}%`);
       whereClause += ` AND (LOWER(s.name) LIKE LOWER($${params.length}) OR LOWER(s.provider) LIKE LOWER($${params.length}) OR LOWER(co.name) LIKE LOWER($${params.length}))`;
+    }
+
+    if (amount_max) {
+      params.push(Number(amount_max));
+      whereClause += ` AND (
+        CASE
+          WHEN s.amount ~ '^[0-9.]+$' THEN CAST(s.amount AS NUMERIC)
+          ELSE 0
+        END <= $${params.length}
+      )`;
     }
 
     // Build Order By
@@ -179,13 +189,13 @@ router.post(
   [
     body('name').optional().trim().notEmpty().withMessage('Scholarship name cannot be empty'),
     body('provider').optional().trim().notEmpty().withMessage('provider cannot be empty'),
-    body('amount').optional().isFloat({ min: 0 }).withMessage('amount must be >= 0'),
+    body('amount').optional().isString().withMessage('amount must be a string'),
     body('deadline').optional().trim().notEmpty().withMessage('deadline cannot be empty'),
     body('country_id').optional().isInt({ min: 1 }).withMessage('country_id must be a valid ID'),
     body('type').optional().trim().notEmpty().withMessage('type cannot be empty'),
     body('description').optional().trim().notEmpty().withMessage('description cannot be empty'),
     body('requirements').optional().isArray().withMessage('requirements must be an array'),
-    body('website').optional().isURL().withMessage('website must be a valid URL'),
+    body('website').optional({ checkFalsy: true }).isURL().withMessage('website must be a valid URL'),
     body('currency').optional().isLength({ min: 3, max: 3 }).withMessage('currency must be 3 letters'),
     body('benefits').optional().isString().withMessage('benefits must be a string')
   ],
@@ -204,10 +214,14 @@ router.post(
       }
       let currencyCode = null;
       if (currency) {
-        currencyCode = String(currency).toUpperCase();
-        const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [currencyCode]);
-        if (currencyCheck.rows.length === 0) {
-          return res.status(400).json({ error: 'Unknown currency code' });
+        currencyCode = String(currency).trim().toUpperCase();
+        if (currencyCode === '') {
+          currencyCode = 'USD';
+        } else {
+          const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [currencyCode]);
+          if (currencyCheck.rows.length === 0) {
+            return res.status(400).json({ error: 'Unknown currency code' });
+          }
         }
       } else {
         currencyCode = 'USD';
@@ -257,17 +271,16 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
       }
     }
 
-    const nextCurrency = currency !== undefined ? (currency ? String(currency).toUpperCase() : null) : existing.currency;
+    let nextCurrency = currency !== undefined ? (currency ? String(currency).trim().toUpperCase() : null) : (existing.currency ? String(existing.currency).trim().toUpperCase() : null);
+    if (nextCurrency === '') nextCurrency = null;
+
     if (nextCurrency) {
       const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [nextCurrency]);
       if (currencyCheck.rows.length === 0) {
         return res.status(400).json({ error: 'Unknown currency code' });
       }
     }
-    const nextAmount = amount !== undefined ? (amount !== null ? Number(amount) : null) : existing.amount;
-    if (nextAmount !== null && (!Number.isFinite(nextAmount) || nextAmount < 0)) {
-      return res.status(400).json({ error: 'amount must be >= 0' });
-    }
+    const nextAmount = amount !== undefined ? (amount !== null ? String(amount) : null) : existing.amount;
 
     const result = await pool.query(
       `UPDATE scholarships
@@ -284,7 +297,7 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
         type !== undefined ? type : existing.type,
         description !== undefined ? description : existing.description,
         requirements !== undefined ? JSON.stringify(toRequirementsArray(requirements)) : existing.requirements,
-        website !== undefined ? website : existing.website,
+        website !== undefined ? (website || null) : existing.website,
         nextCurrency,
         benefits !== undefined ? benefits : existing.benefits,
         req.params.id

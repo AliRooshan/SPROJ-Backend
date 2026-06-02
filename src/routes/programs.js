@@ -341,7 +341,7 @@ router.post(
   [
     body('university_id').optional().isInt({ min: 1 }).withMessage('Valid university_id must be a valid ID'),
     body('name').optional().trim().notEmpty().withMessage('Program name cannot be empty'),
-    body('degree_level').optional().isIn(['Masters', 'PHD']).withMessage('degree_level must be Masters or PHD'),
+    body('degree_level').optional().isString().withMessage('degree_level must be a string'),
     body('field_of_study').optional().trim().notEmpty().withMessage('field_of_study cannot be empty'),
     body('deadline').optional().trim().notEmpty().withMessage('deadline cannot be empty'),
     body('tuition_amount').optional().isFloat({ min: 0 }).withMessage('tuition_amount must be >= 0'),
@@ -349,7 +349,7 @@ router.post(
     body('duration').optional().trim().notEmpty().withMessage('duration cannot be empty'),
     body('description').optional().trim().notEmpty().withMessage('description cannot be empty'),
     body('eligibility').optional().isArray().withMessage('eligibility must be an array'),
-    body('website').optional().isURL().withMessage('website must be a valid URL')
+    body('website').optional({ checkFalsy: true }).isURL().withMessage('website must be a valid URL')
   ],
   async (req, res) => {
     const errors = validationResult(req);
@@ -445,15 +445,14 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
         return res.status(400).json({ error: 'Unknown university_id' });
       }
     }
-    const nextDegree = degree_level ?? existing.degree_level;
-    if (nextDegree !== null && !['Masters', 'PHD'].includes(nextDegree)) {
-      return res.status(400).json({ error: 'degree_level must be Masters or PHD' });
-    }
+    const nextDegree = degree_level !== undefined ? degree_level : existing.degree_level;
     const nextTuition = tuition_amount !== undefined ? (tuition_amount !== null ? Number(tuition_amount) : null) : existing.tuition_amount;
     if (nextTuition !== null && nextTuition < 0) {
       return res.status(400).json({ error: 'tuition_amount must be >= 0' });
     }
-    const nextCurrency = currency !== undefined ? (currency ? String(currency).toUpperCase() : null) : existing.currency;
+    let nextCurrency = currency !== undefined ? (currency ? String(currency).trim().toUpperCase() : null) : (existing.currency ? String(existing.currency).trim().toUpperCase() : null);
+    if (nextCurrency === '') nextCurrency = null;
+
     if (nextCurrency) {
       const currencyCheck = await pool.query('SELECT currency FROM currency_rates WHERE currency = $1', [nextCurrency]);
       if (currencyCheck.rows.length === 0) {
@@ -479,7 +478,7 @@ router.put('/:id', authenticateToken, requireAdmin, async (req, res) => {
         duration !== undefined ? duration : existing.duration,
         description !== undefined ? description : existing.description,
         eligibility !== undefined ? JSON.stringify(toEligibilityArray(eligibility)) : existing.eligibility,
-        website !== undefined ? website : existing.website,
+        website !== undefined ? (website || null) : existing.website,
         req.params.id
       ]
     );
