@@ -154,6 +154,9 @@ router.put('/:id/profile', authenticateToken, isSelf, async (req, res) => {
       ]
     );
 
+    // Delete all program matches for the user upon changes
+    await pool.query('DELETE FROM program_matches WHERE student_id = $1', [req.params.id]);
+
     const result = await pool.query(
       `SELECT u.id, u.email, u.full_name, u.phone, u.is_admin, u.created_at,
               up.degree_level, up.major, up.gpa, up.english_test, up.english_score,
@@ -167,50 +170,29 @@ router.put('/:id/profile', authenticateToken, isSelf, async (req, res) => {
 
     if (result.rows.length === 0) return res.status(404).json({ error: 'User not found' });
 
-    // Trigger webhook depending on whether it's initial setup or an update
-    if (isNewSetup) {
-      const submitWebhookUrl = process.env.PROFILE_SUBMITTED_WEBHOOK_URL;
-      console.log(`[PROFILE SUBMIT] User ID: ${req.params.id}. Webhook URL: ${submitWebhookUrl || 'not configured'}`);
-      if (submitWebhookUrl) {
-        console.log(`[PROFILE SUBMIT] Triggering webhook POST to: ${submitWebhookUrl}...`);
-        try {
-          fetch(submitWebhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: req.params.id })
-          })
-          .then(res => {
-            console.log(`[PROFILE SUBMIT] Webhook successfully triggered. Status: ${res.status}`);
-          })
-          .catch(err => {
-            console.error('[PROFILE SUBMIT] Webhook network error:', err.message);
-          });
-        } catch (err) {
-          console.error('[PROFILE SUBMIT] Failed to trigger profile-submitted webhook:', err.message);
-        }
-      }
-    } else {
-      const updateWebhookUrl = process.env.PROFILE_UPDATED_WEBHOOK_URL;
-      console.log(`[PROFILE UPDATE] User ID: ${req.params.id}. Webhook URL: ${updateWebhookUrl || 'not configured'}`);
-      if (updateWebhookUrl) {
-        console.log(`[PROFILE UPDATE] Triggering webhook POST to: ${updateWebhookUrl}...`);
-        try {
-          fetch(updateWebhookUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ userId: req.params.id })
-          })
-          .then(res => {
-            console.log(`[PROFILE UPDATE] Webhook successfully triggered. Status: ${res.status}`);
-          })
-          .catch(err => {
-            console.error('[PROFILE UPDATE] Webhook network error:', err.message);
-          });
-        } catch (err) {
-          console.error('[PROFILE UPDATE] Failed to trigger profile-updated webhook:', err.message);
-        }
+    // Trigger profile-submitted webhook (runs on both setup and subsequent edits/updates)
+    const submitWebhookUrl = process.env.PROFILE_SUBMITTED_WEBHOOK_URL;
+    console.log(`[PROFILE SUBMIT] User ID: ${req.params.id}. Webhook URL: ${submitWebhookUrl || 'not configured'}`);
+    if (submitWebhookUrl) {
+      console.log(`[PROFILE SUBMIT] Triggering webhook POST to: ${submitWebhookUrl}...`);
+      try {
+        fetch(submitWebhookUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId: req.params.id })
+        })
+        .then(res => {
+          console.log(`[PROFILE SUBMIT] Webhook successfully triggered. Status: ${res.status}`);
+        })
+        .catch(err => {
+          console.error('[PROFILE SUBMIT] Webhook network error:', err.message);
+        });
+      } catch (err) {
+        console.error('[PROFILE SUBMIT] Failed to trigger profile-submitted webhook:', err.message);
       }
     }
+
+
 
     res.json({ message: 'Profile updated', user: result.rows[0] });
   } catch (err) {
